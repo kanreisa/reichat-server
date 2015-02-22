@@ -1,0 +1,42 @@
+{
+  "name": "reichat-server",
+  "version": "1.0.0",
+  "description": "The real-time paint chat server for reichat.",
+  "main": "./lib/index.js",
+  "scripts": {
+    "test": "gulp test",
+    "build": "gulp build",
+    "watch": "gulp watch",
+    "tsd": "tsd"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kanreisa/reichat-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kanreisa/reichat-server/issues"
+  },
+  "keywords": [
+    "reichat"
+  ],
+  "author": "Yuki KAN <re@pixely.jp> (https://github.com/kanreisa)",
+  "license": "MIT",
+  "homepage": "https://github.com/kanreisa/reichat-server",
+  "dependencies": {
+    "mkdirp": "^0.5.0",
+    "node-png": "^0.4.3",
+    "opts": "^1.2.2",
+    "redis": "^0.12.1",
+    "socket.io": "^1.3.4",
+    "uuid": "^2.0.1"
+  },
+  "devDependencies": {
+    "gulp": "^3.8.11",
+    "gulp-mocha": "^2.0.0",
+    "gulp-rename": "^1.2.0",
+    "gulp-typescript": "^2.4.2",
+    "merge2": "^0.3.1",
+    "tsd": "^0.6.0-beta.5",
+    "typescript": "^1.4.1"
+  }
+}
