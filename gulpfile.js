@@ -11,7 +11,9 @@ var merge = require('merge2');
 gulp.task('tsc', function () {
 
     var result = gulp.src('src/*.ts').pipe(typescript({
-        target: 'ES5', declarationFiles: true
+        target: 'ES6',
+        module: 'commonjs',
+        declarationFiles: true
     }));
 
     return merge([
