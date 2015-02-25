@@ -1,6 +1,6 @@
 {
   "name": "reichat-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "The real-time paint chat server for reichat.",
   "main": "./lib/index.js",
   "scripts": {
