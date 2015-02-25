@@ -4,7 +4,6 @@ The real-time paint chat server for **[reichat](https://github.com/kanreisa/reic
 [![npm version][npm-img]][npm-url]
 [![Linux Build][travis-img]][travis-url]
 [![Windows Build][appveyor-img]][appveyor-url]
-[![Test Coverage][coveralls-img]][coveralls-url]
 [![Dependency Status][dep-img]][dep-url]
 [![devDependency Status][devdep-img]][devdep-url]
 
