@@ -16,8 +16,8 @@ import mkdirp = require('mkdirp');
 
 var PNG = require('node-png').PNG;
 
-import httpUtil = require('http-util');
-import ioUtil = require('io-util');
+import httpUtil = require('./http-util');
+import ioUtil = require('./io-util');
 
 export enum EDataMode {
     None = 0,
@@ -38,13 +38,13 @@ export interface IServerConfig {
     maxChatLogCount?: number;
     dataDir?: string;
     dataFilePrefix?: string;
-    dataSaveInterval?: number;
     redisHost?: string;
     redisPort?: number;
     redisPassword?: string;
     redisKeyPrefix?: string;
     clientDir?: string;
     forwardedHeaderType?: string;
+    clientVersion?: string;
 }
 
 export interface IDistServerConfig {
@@ -52,7 +52,12 @@ export interface IDistServerConfig {
     canvasWidth: number;
     canvasHeight: number;
     layerCount: number;
-    version: string;
+    version: IDistVersion
+}
+
+export interface IDistVersion {
+    server: string;
+    client: string;
 }
 
 export interface IDistServer {
@@ -66,7 +71,7 @@ export interface IDistClient {
 }
 
 interface IResources {
-    layers: ILayer[];
+    layers: Layer[];
     clients: IClient[];
 }
 
@@ -81,17 +86,11 @@ interface IServer {
 
 interface IClient {
     uuid: string;
-    name: string;
+    name?: string;
     pin: string;
-    remoteAddr: string;
-    isOnline: boolean;
+    remoteAddr?: string;
+    isOnline?: boolean;
     server: IServer;
-}
-
-interface ILayer {
-    isUpdated: boolean;
-    pngCache: Buffer;
-    data: Buffer;
 }
 
 interface IRedisMessage {
@@ -100,6 +99,38 @@ interface IRedisMessage {
     target?: ECollectProvideTarget;
     body?: any;
 }
+
+interface IIOMessage {
+    client: IDistClient
+}
+
+interface IChatMessage {
+    message: string;
+    time: number
+}
+
+interface IPaintMessage {
+    layerNumber: number;
+    mode: string;
+    x: number;
+    y: number;
+    data: Buffer;
+}
+
+interface IStrokeMessage {
+    points: any[]
+}
+
+interface IPointerMessage {
+    x: number;
+    y: number;
+}
+
+interface IIOSystemMessage extends IChatMessage { }
+interface IIOChatMessage extends IIOMessage, IChatMessage { }
+interface IIOPaintMessage extends IIOMessage, IPaintMessage { }
+interface IIOStrokeMessage extends IIOMessage, IStrokeMessage { }
+interface IIOPointerMessage extends IIOMessage, IPointerMessage { }
 
 export function createServer(config?: IServerConfig): Server {
     return new Server(config);
@@ -125,17 +156,19 @@ export class Server extends events.EventEmitter {
         socket: {}
     };
 
-    constructor(public config: IServerConfig = {}) {
+    private interval: any = {};
 
+    constructor(public config: IServerConfig = {}) {
         super();
 
         // server id
-
-        this.id = uuid.v4();
-        Object.freeze(this.id);
+        Object.defineProperty(this, 'id', {
+            configurable: false,
+            writable: false,
+            value: uuid.v4()
+        });
 
         // configuration
-
         if (!config.title) {
             config.title = 'PaintChat';
         }
@@ -157,9 +190,6 @@ export class Server extends events.EventEmitter {
         if (!config.dataFilePrefix) {
             config.dataFilePrefix = 'reichat_';
         }
-        if (!config.dataSaveInterval) {
-            config.dataSaveInterval = 3000;// deprecated?
-        }
         if (!config.redisPort) {
             config.redisPort = 6379;
         }
@@ -172,51 +202,65 @@ export class Server extends events.EventEmitter {
         if (!config.forwardedHeaderType) {
             config.forwardedHeaderType = '';
         }
+        if (!config.clientVersion) {
+            config.clientVersion = '0.0.0';
+        }
 
         Object.freeze(this.config);
 
         // decide the data mode
+        var dataMode = EDataMode.None;
 
         if (config.redisHost) {
-            this.dataMode = EDataMode.Redis;
-        } else if (config.dataDir) {
-            this.dataMode = EDataMode.FS;
-        } else {
-            this.dataMode = EDataMode.None;
+            dataMode = EDataMode.Redis;
+        } else if (config.dataDir && config.dataDir !== '/dev/null' && config.dataDir !== 'null') {
+            dataMode = EDataMode.FS;
+
+            if (fs.existsSync(config.dataDir) === false) {
+                mkdirp(config.dataDir, (err) => {
+                    if (err) {
+                        console.error(err);
+                        throw err;
+                    }
+                });
+            }
         }
 
-        Object.freeze(this.dataMode);
+        Object.defineProperty(this, 'dataMode', {
+            configurable: false,
+            writable: false,
+            value: dataMode
+        });
+
+        util.log(util.format('decided data mode: %s', EDataMode[this.dataMode]));
+
+        // prepare the Layers
+        this.initLayers();
+
+        // create a HTTP Server
+        this.httpServer = http.createServer(this.httpServerRequestListener.bind(this));
+
+        // create a Socket.IO Server
+        this.io = socketio(this.httpServer);
+        this.io.on('connection', this.ioConnectionListener.bind(this));
 
         // Redis
-
         if (this.dataMode === EDataMode.Redis) {
             this.initRedisClients();
         }
 
         // FS
-
         if (this.dataMode === EDataMode.FS) {
-
+            this.initFileSystem();
         }
 
-        // events
-
-        // create a HTTP Server
-
-        this.httpServer = http.createServer(this.httpServerRequestListener.bind(this));
-
-        // create a Socket.IO Server
-
-        this.io = socketio(this.httpServer);
-        this.io.on('connection', this.ioConnectionListener.bind(this));
+        // finally, get sync.
+        this.syncLayers(() => this.emit('ready'));
     }
 
     listen(port: any, hostname?: string, backlog?: number, callback?: Function): Server {
 
-        this.httpServer.listen(port, hostname, backlog, function () {
-
-            util.log(util.format('listening on %s:%s', hostname, port));
-
+        this.httpServer.listen(port, hostname, backlog, () => {
             callback.call(this, arguments);
         });
 
@@ -229,7 +273,10 @@ export class Server extends events.EventEmitter {
             canvasWidth: this.config.canvasWidth,
             canvasHeight: this.config.canvasHeight,
             layerCount: this.config.layerCount,
-            version: pkg.version
+            version: {
+                server: pkg.version,
+                client: this.config.clientVersion
+            }
         };
     }
 
@@ -255,6 +302,126 @@ export class Server extends events.EventEmitter {
         return clients;
     }
 
+    private clientToDistributable(client: IClient): IDistClient {
+        return {
+            uuid: client.uuid,
+            name: client.name,
+            server: client.server
+        }
+    }
+
+    private initLayers(): void {
+
+        var i: number, layer: Layer;
+
+        for (i = 0; i < this.config.layerCount; i++) {
+            layer = new Layer(this.config.canvasWidth, this.config.canvasHeight, i);
+
+            switch (this.dataMode) {
+                case EDataMode.FS:
+                    layer.path = path.join(this.config.dataDir, [this.config.dataFilePrefix, 'layer', i, '.png'].join(''));
+                    break;
+                case EDataMode.Redis:
+                    layer.path = this.config.redisKeyPrefix + 'layer:' + i;
+                    break;
+            }
+
+            this.resource.layers.push(layer);
+        }
+    }
+
+    private syncLayers(done: () => void): void {
+
+        var count = this.resource.layers.length;
+
+        this.resource.layers.forEach((layer) => {
+
+            this.loadLayer(layer, () => {
+
+                --count;
+
+                if (count === 0) {
+                    done();
+                }
+            });
+        });
+    }
+
+    private loadLayer(layer: Layer, done: () => void): void {
+
+        if (this.dataMode === EDataMode.None) {
+            setImmediate(done);
+            return;
+        }
+
+        var png = new PNG().on('parsed', (data) => {
+
+            if (png.width !== this.config.canvasWidth || png.height !== this.config.canvasHeight) {
+                console.error(util.format('layer#%s data not loaded because canvas size different.', layer.n));
+                return;
+            }
+
+            data.copy(layer.data);
+            layer.emit('update');
+
+            Object.keys(this.io.sockets.connected).forEach((socketId) => {
+                this.io.sockets.connected[socketId].disconnect(true);
+            });
+
+            util.log(util.format('layer#%s data loaded. %s=%s', layer.n, EDataMode[this.dataMode], layer.path));
+
+            done();
+        });
+
+        switch (this.dataMode) {
+            case EDataMode.FS:
+                if (fs.existsSync(layer.path) === true) {
+                    util.log(util.format('layer#%s data found. FS=%s', layer.n, layer.path));
+
+                    fs.createReadStream(layer.path).pipe(png);
+                } else {
+                    try {
+                        png.end();
+                    } catch (e) {
+                        setImmediate(done);
+                    }
+                }
+                break;
+            case EDataMode.Redis:
+                this.redisClient.get(new Buffer(layer.path), (err, buffer) => {
+
+                    if (err) {
+                        png.end();
+                        console.error(err);
+                        return;
+                    }
+
+                    if (buffer) {
+                        util.log(util.format('layer#%s data found. Redis=%s', layer.n, layer.path));
+
+                        png.end(buffer);
+                    } else {
+                        try {
+                            png.end();
+                        } catch (e) {
+                            setImmediate(done);
+                        }
+                    }
+                });
+                break;
+        }
+    }
+
+    private initFileSystem(): void {
+
+        // observe the change of the Layers, and save.
+        this.resource.layers.forEach((layer) => {
+            layer.on('change', () => {
+                layer.toPngStream(fs.createWriteStream(layer.path))
+            })
+        });
+    }
+
     private initRedisClients(): void {
 
         this.redisClient = redis.createClient(this.config.redisPort, this.config.redisHost, {
@@ -267,31 +434,101 @@ export class Server extends events.EventEmitter {
         });
 
         this.redisSubscriber.on('message', this.redisMessageListener.bind(this));
+
+        this.subscribeRedis();
+
+        // observe the change of the Layers, and save.
+        this.resource.layers.forEach((layer) => {
+            layer.on('change', () => {
+                layer.toPngBuffer((buffer) => {
+                    this.redisClient.set(new Buffer(layer.path), buffer);
+                });
+            })
+        });
     }
 
     private subscribeRedis(): void {
 
-        this.redisSubscriber.subscribe('collect');
-        this.redisSubscriber.subscribe('provide');
-        this.redisSubscriber.subscribe('ping');
-        this.redisSubscriber.subscribe('pong');
-        this.redisSubscriber.subscribe('paint');
-        this.redisSubscriber.subscribe('chat');
-        this.redisSubscriber.subscribe('stroke');
-        this.redisSubscriber.subscribe('pointer');
+        var prefix = this.config.redisKeyPrefix;
+
+        this.redisSubscriber.subscribe(prefix + 'collect');
+        this.redisSubscriber.subscribe(prefix + 'provide');
+        this.redisSubscriber.subscribe(prefix + 'ping');
+        this.redisSubscriber.subscribe(prefix + 'pong');
+        this.redisSubscriber.subscribe(prefix + 'system');
+        this.redisSubscriber.subscribe(prefix + 'chat');
+        this.redisSubscriber.subscribe(prefix + 'paint');
+        this.redisSubscriber.subscribe(prefix + 'stroke');
+        this.redisSubscriber.subscribe(prefix + 'pointer');
+
+        // pinging
+        this.interval.redisPinging = setInterval(() => {
+
+            var otherServers = [];
+            this.resource.clients.forEach((client) => {
+
+                if (client.server.id !== this.id && otherServers.indexOf(client.server.id) === -1) {
+                    otherServers.push(client.server.id);
+                }
+            });
+
+            if (otherServers.length === 0) {
+                return;
+            }
+
+            var pongMessageListener = (type: string, json: string) => {
+
+                if (type === this.config.redisKeyPrefix + 'pong') {
+                    var data: IRedisMessage = JSON.parse(json);
+
+                    var serverIndex = otherServers.indexOf(data.server.id);
+                    if (serverIndex !== -1) {
+                        otherServers.splice(serverIndex, 1);
+                    }
+                }
+            };
+
+            this.redisSubscriber.on('message', pongMessageListener);
+
+            setTimeout(() => {
+
+                this.redisSubscriber.removeListener('message', pongMessageListener);
+
+                if (otherServers.length === 0) {
+                    return;
+                }
+
+                this.resource.clients = this.resource.clients.filter((client) => {
+                    return otherServers.indexOf(client.server.id) === -1;
+                });
+
+                this.io.emit('clients', this.distributableClients);
+
+                util.log(util.format('server %s has timed-out.', otherServers.join(' and ')));
+            }, 6000);
+            
+            // ping
+            setTimeout(() => this.publishRedis('ping'), 1000);
+        }, 10000);
+
+        // collect
+        setImmediate(() => this.publishRedis('collect', { target: ECollectProvideTarget.Clients }));
     }
 
-    private unsubscribeRedis(): void {
+    /* private unsubscribeRedis(): void {
 
-        this.redisSubscriber.unsubscribe('collect');
-        this.redisSubscriber.unsubscribe('provide');
-        this.redisSubscriber.unsubscribe('ping');
-        this.redisSubscriber.unsubscribe('pong');
-        this.redisSubscriber.unsubscribe('paint');
-        this.redisSubscriber.unsubscribe('chat');
-        this.redisSubscriber.unsubscribe('stroke');
-        this.redisSubscriber.unsubscribe('pointer');
-    }
+        var prefix = this.config.redisKeyPrefix;
+
+        this.redisSubscriber.unsubscribe(prefix + 'collect');
+        this.redisSubscriber.unsubscribe(prefix + 'provide');
+        this.redisSubscriber.unsubscribe(prefix + 'ping');
+        this.redisSubscriber.unsubscribe(prefix + 'pong');
+        this.redisSubscriber.unsubscribe(prefix + 'system');
+        this.redisSubscriber.unsubscribe(prefix + 'chat');
+        this.redisSubscriber.unsubscribe(prefix + 'paint');
+        this.redisSubscriber.unsubscribe(prefix + 'stroke');
+        this.redisSubscriber.unsubscribe(prefix + 'pointer');
+    } */
 
     private publishRedis(name: string, data: IRedisMessage = {}): void {
 
@@ -299,7 +536,7 @@ export class Server extends events.EventEmitter {
             id: this.id
         };
 
-        this.redisClient.publish(name, JSON.stringify(data));
+        this.redisClient.publish(this.config.redisKeyPrefix + name, JSON.stringify(data));
     }
 
     private redisMessageListener(type: string, json: string): void {
@@ -310,6 +547,10 @@ export class Server extends events.EventEmitter {
             return;
         }
 
+        if (this.config.redisKeyPrefix !== '') {
+            type = type.replace(new RegExp('^' + this.config.redisKeyPrefix), '');
+        }
+
         switch (type) {
             case 'ping':
                 this.publishRedis('pong');
@@ -318,7 +559,7 @@ export class Server extends events.EventEmitter {
                 if (data.target === ECollectProvideTarget.Clients) {
                     this.publishRedis('provide', {
                         target: ECollectProvideTarget.Clients,
-                        body: this.resource.clients
+                        body: this.resource.clients.filter((client) => client.server.id === this.id)
                     });
                 }
                 break;
@@ -328,14 +569,21 @@ export class Server extends events.EventEmitter {
                     this.io.emit('clients', this.distributableClients);
                 }
                 break;
-            case 'paint':
-                data.body.data = new Buffer(data.body.data);
+            case 'system':
+                this.sendSystemMessage(data.body, data.server);
                 break;
             case 'chat':
+                this.sendChat(data.client, data.body);
+                break;
+            case 'paint':
+                data.body.data = new Buffer(data.body.data);
+                this.sendPaint(data.client, data.body);
                 break;
             case 'stroke':
+                this.sendStroke(data.client, data.body);
                 break;
             case 'pointer':
+                this.sendPointer(data.client, data.body);
                 break;
         }
     }
@@ -351,9 +599,9 @@ export class Server extends events.EventEmitter {
             }
         }
 
-        for (i = 0; i < clients.length; i++) {
-            this.resource.clients.push(clients[i]);
-        }
+        clients.filter((client) => client.server.id === server.id).forEach((client) => {
+            this.resource.clients.push(client);
+        });
     }
 
     private httpServerRequestListener(req: http.ServerRequest, res: http.ServerResponse): void {
@@ -395,7 +643,7 @@ export class Server extends events.EventEmitter {
             if (req.method === 'HEAD') {
                 res.end();
             } else {
-                this.canvasToPngStream(res);
+                this.canvasToPng().pipe(res);
             }
         } else if (/^\/layers\/[0-9]+$/.test(location) === true) {
             var layerNumber = parseInt(location.match(/^\/layers\/([0-9]+)$/)[1], 10);
@@ -410,7 +658,7 @@ export class Server extends events.EventEmitter {
                 if (req.method === 'HEAD') {
                     res.end();
                 } else {
-                    this.layerToPngStream(this.resource.layers[layerNumber], res);
+                    this.resource.layers[layerNumber].toPngStream(res);
                 }
             }
         } else if (req.method === 'HEAD' || req.method === 'GET' || req.method === 'OPTIONS') {
@@ -452,36 +700,100 @@ export class Server extends events.EventEmitter {
 
         var client: IClient = null;
 
+        socket.once('disconnect', () => {
 
-    }
+            if (client !== null) {
+                if (client.uuid && this.map.socket[client.uuid]) {
+                    delete this.map.socket[client.uuid];
+                    client.isOnline = false;
+                }
 
-    private layerToPngStream(layer: ILayer, stream: NodeJS.WritableStream): void {
+                if (this.dataMode === EDataMode.Redis) {
+                    this.publishRedis('provide', {
+                        target: ECollectProvideTarget.Clients,
+                        body: this.resource.clients.filter((client) => client.server.id === this.id)
+                    });
+                }
 
-        if (layer.pngCache === null) {
-            stream.end(layer.pngCache);
-        } else {
-            var png = new PNG({
-                width: this.config.canvasWidth,
-                height: this.config.canvasHeight
+                this.io.emit('clients', this.distributableClients);
+
+                this.sendSystemMessage(util.format('! %s has left.', client.name));
+
+                util.log(util.format('%s %s disconnected. client=%s<%s>', remoteAddr, socket.id, client.name, client.uuid));
+            } else {
+                util.log(util.format('%s %s disconnected.', remoteAddr, socket.id));
+            }
+        });
+
+        socket.on('client', (newClient: IClient) => {
+
+            if (client !== null) {
+                if (client.uuid && this.map.socket[client.uuid]) {
+                    delete this.map.socket[client.uuid];
+                    client.isOnline = false;
+                }
+            }
+
+            if (newClient.uuid && newClient.uuid.length !== 36) {
+                return;
+            }
+
+            if (!newClient.name || newClient.name.length > 16) {
+                return;
+            }
+
+            if (newClient.uuid && this.map.client[newClient.uuid] && this.map.client[newClient.uuid].pin === newClient.pin) {
+                client = this.map.client[newClient.uuid];
+
+                if (this.map.socket[client.uuid]) {
+                    this.map.socket[client.uuid].disconnect(true);
+                    delete this.map.socket[client.uuid];
+                }
+            } else {
+                client = {
+                    uuid: uuid.v1(),
+                    pin: uuid.v4(),
+                    server: {
+                        id: this.id
+                    }
+                };
+                this.map.client[client.uuid] = client;
+                this.resource.clients.push(client);
+            }
+
+            client.name = newClient.name;
+            client.remoteAddr = remoteAddr;
+            client.isOnline = true;
+
+            this.map.socket[client.uuid] = socket;
+
+            socket.emit('client', {
+                uuid: client.uuid,
+                name: client.name,
+                pin: client.pin
             });
 
-            layer.data.copy(png.data);
+            if (this.dataMode === EDataMode.Redis) {
+                this.publishRedis('provide', {
+                    target: ECollectProvideTarget.Clients,
+                    body: this.resource.clients.filter((client) => client.server.id === this.id)
+                });
+            }
 
-            var buffers = [];
+            this.io.emit('clients', this.distributableClients);
 
-            png.pack().on('data', function (buffer) {
+            this.sendSystemMessage(util.format('! %s has join.', client.name));
 
-                stream.write(buffer);
-                buffers.push(buffer);
-            }).on('end', function () {
+            util.log(util.format('%s %s joined. client=%s<%s>', remoteAddr, socket.id, client.name, client.uuid));
+        });
 
-                stream.end();
-                layer.pngCache = Buffer.concat(buffers);
-            });
-        }
+        socket.on('stroke', (stroke) => this.sendStroke(client, stroke));
+        socket.on('pointer', (pointer) => this.sendPointer(client, pointer));
+        socket.on('paint', (paint) => this.sendPaint(client, paint));
+        socket.on('chat', (chat) => this.sendChat(client, chat));
     }
 
-    private canvasToPngStream(stream: NodeJS.WritableStream): void {
+    private canvasToPng(): NodeJS.ReadableStream {
 
         var i, j, l, x, y, a,
             w = this.config.canvasWidth,
@@ -507,6 +819,291 @@ export class Server extends events.EventEmitter {
             }
         }
 
-        png.pack().pipe(stream);
+        return png.pack();
+    }
+
+    private sendPaint(client: IClient, paint: IPaintMessage): void {
+
+        if (isNaN(paint.layerNumber) || paint.layerNumber < 0 || paint.layerNumber >= this.config.layerCount) {
+            return;
+        }
+        if (isNaN(paint.x) || isNaN(paint.y)) {
+            return;
+        }
+        if (paint.mode !== 'normal' && paint.mode !== 'erase') {
+            return;
+        }
+        if (Buffer.isBuffer(paint.data) === false) {
+            return;
+        }
+
+        paint.x = paint.x >> 0;
+        paint.y = paint.y >> 0;
+
+        if (paint.x < 0 || paint.y < 0) {
+            return;
+        }
+
+        new PNG().parse(paint.data, (err, png) => {
+
+            if (err) {
+                return;
+            }
+
+            var i, j, x, y, aA, bA, xA,
+                w = this.config.canvasWidth,
+                h = this.config.canvasHeight,
+                px = paint.x,
+                py = paint.y,
+                pw = Math.min(paint.x + png.width, w),
+                ph = Math.min(paint.y + png.height, h),
+                iw = png.width,
+                ih = png.height,
+                layer = this.resource.layers[paint.layerNumber];
+
+            for (y = py; y < ph; y++) {
+                for (x = px; x < pw; x++) {
+                    i = (w * y + x) << 2;
+                    j = (iw * (y - py) + (x - px)) << 2;
+
+                    layer.data[i] = png.data[j];
+                    layer.data[i + 1] = png.data[j + 1];
+                    layer.data[i + 2] = png.data[j + 2];
+                    layer.data[i + 3] = png.data[j + 3];
+                }
+            }
+
+            if (client.server.id === this.id) {
+                if (this.dataMode === EDataMode.Redis) {
+                    this.publishRedis('paint', {
+                        client: client,
+                        body: paint
+                    });
+                }
+
+                layer.emit('change');
+            } else {
+                layer.emit('update');
+            }
+
+            var ioMessage: IIOPaintMessage = {
+                client: this.clientToDistributable(client),
+                layerNumber: paint.layerNumber,
+                mode: paint.mode,
+                x: paint.x,
+                y: paint.y,
+                data: paint.data
+            };
+
+            if (this.map.socket[client.uuid]) {
+                this.map.socket[client.uuid].broadcast.emit('paint', ioMessage);
+                this.map.socket[client.uuid].emit('painted');
+            } else {
+                this.io.emit('paint', ioMessage);
+            }
+        });
+    }
+
+    private sendStroke(client: IClient, stroke: IStrokeMessage) {
+
+        if (util.isArray(stroke.points) === false) {
+            return;
+        }
+
+        var i, l, point;
+        for (i = 0, l = stroke.points.length; i < l; i++) {
+            point = stroke.points[i];
+
+            if (!point || isNaN(point[0]) || isNaN(point[1]) || isNaN(point[2])) {
+                return;
+            }
+            if (point[0] < 0 || point[1] < 0 || point[2] <= 0) {
+                return;
+            }
+            if (point[0] > this.config.canvasWidth || point[1] > this.config.canvasHeight) {
+                return;
+            }
+            if (point[3]) {
+                point.splice(3, 1);
+            }
+            point[0] = Math.round(point[0]);
+            point[1] = Math.round(point[1]);
+            point[2] = point[2] << 0;
+        }
+
+        if (client.server.id === this.id) {
+            if (this.dataMode === EDataMode.Redis) {
+                this.publishRedis('stroke', {
+                    client: client,
+                    body: stroke
+                });
+            }
+        }
+
+        var ioMessage: IIOStrokeMessage = {
+            client: this.clientToDistributable(client),
+            points: stroke.points
+        };
+
+        if (this.map.socket[client.uuid]) {
+            this.map.socket[client.uuid].volatile.broadcast.emit('stroke', ioMessage);
+        } else {
+            Object.keys(this.io.sockets.connected).forEach((socketId) => {
+                this.io.sockets.connected[socketId].volatile.emit('stroke', ioMessage);
+            });
+        }
+    }
+
+    private sendPointer(client: IClient, pointer: IPointerMessage) {
+
+        if (isNaN(pointer.x) || isNaN(pointer.y)) {
+            return;
+        }
+
+        pointer.x = pointer.x >> 0;
+        pointer.y = pointer.y >> 0;
+
+        if (pointer.x < -1 || pointer.y < -1 || pointer.x > this.config.canvasWidth || pointer.y > this.config.canvasHeight) {
+            return;
+        }
+
+        if (client.server.id === this.id) {
+            if (this.dataMode === EDataMode.Redis) {
+                this.publishRedis('pointer', {
+                    client: client,
+                    body: pointer
+                });
+            }
+        }
+
+        var ioMessage: IIOPointerMessage = {
+            client: this.clientToDistributable(client),
+            x: pointer.x,
+            y: pointer.y
+        };
+
+        if (this.map.socket[client.uuid]) {
+            this.map.socket[client.uuid].volatile.broadcast.emit('pointer', ioMessage);
+        } else {
+            Object.keys(this.io.sockets.connected).forEach((socketId) => {
+                this.io.sockets.connected[socketId].volatile.emit('pointer', ioMessage);
+            });
+        }
+    }
+
+    private sendChat(client: IClient, chat: IChatMessage) {
+
+        if (typeof chat.message !== 'string' || chat.message.trim() === '') {
+            return;
+        }
+
+        if (chat.message.length > 256) {
+            return;
+        }
+
+        if (this.dataMode === EDataMode.Redis && client.server.id === this.id) {
+            this.publishRedis('chat', {
+                client: client,
+                body: {
+                    message: chat.message,
+                    time: Date.now()
+                }
+            });
+        }
+
+        var ioMessage: IIOChatMessage = {
+            client: this.clientToDistributable(client),
+            message: chat.message,
+            time: chat.time || Date.now()
+        };
+
+        this.io.emit('chat', ioMessage);
+
+        util.log(util.format('%s %s said: "%s". client=%s server=%s', client.remoteAddr, client.name, chat.message, client.uuid, client.server.id));
+    }
+
+    private sendSystemMessage(message: string, server?: IServer) {
+
+        if (!server && this.dataMode === EDataMode.Redis) {
+            this.publishRedis('system', {
+                body: message
+            });
+        }
+
+        var ioMessage: IIOSystemMessage = {
+            message: message,
+            time: Date.now()
+        };
+
+        this.io.emit('chat', ioMessage);
+    }
+}
+
+class Layer extends events.EventEmitter {
+
+    data: Buffer;
+    pngCache: Buffer = null;
+
+    constructor(public width: number, public height: number, public n: number, public path: string = '') {
+        super();
+
+        this.data = new Buffer(width * height * 4);
+
+        // Event: "update" when layer has updated.
+        this.on('update', () => {
+            this.pngCache = null;
+        });
+
+        // Event: "change" by this server user
+        this.on('change', () => {
+            this.pngCache = null;
+        });
+    }
+
+    toPngStream(stream: NodeJS.WritableStream): void {
+
+        if (this.pngCache === null) {
+            var png = new PNG({
+                width: this.width,
+                height: this.height
+            });
+
+            this.data.copy(png.data);
+
+            var buffers = [];
+
+            png.pack().on('data', (buffer) => {
+                stream.write(buffer);
+                buffers.push(buffer);
+            }).on('end', () => {
+                stream.end();
+                this.pngCache = Buffer.concat(buffers);
+            });
+        } else {
+            stream.end(this.pngCache);
+        }
+    }
+
+    toPngBuffer(callback: (buffer: Buffer) => void): void {
+
+        if (this.pngCache === null) {
+            var png = new PNG({
+                width: this.width,
+                height: this.height
+            });
+
+            this.data.copy(png.data);
+
+            var buffers = [];
+
+            png.pack().on('data', (buffer) => {
+                buffers.push(buffer);
+            }).on('end', () => {
+                this.pngCache = Buffer.concat(buffers);
+                callback(this.pngCache);
+            });
+        } else {
+            callback(this.pngCache);
+        }
     }
 }
