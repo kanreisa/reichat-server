@@ -1,24 +1,24 @@
 {
   "version": "v4",
-  "repo": "borisyankov/DefinitelyTyped",
+  "repo": "kanreisa/DefinitelyTyped",
   "ref": "master",
   "path": "typings",
   "bundle": "typings/tsd.d.ts",
   "installed": {
     "node/node.d.ts": {
-      "commit": "a5c37c4ea3f22ee70bf267c81d57bf5d491e5175"
+      "commit": "24991f93983dcd7b9004001583b74978114e3afd"
     },
     "node-uuid/node-uuid.d.ts": {
-      "commit": "3ceb61d01e4c39d7de1df4241b0c0b7c5939996f"
+      "commit": "24991f93983dcd7b9004001583b74978114e3afd"
     },
     "node_redis/node_redis.d.ts": {
-      "commit": "8e85bba87a8c95c7f357e78e3d5d1269c337741d"
+      "commit": "24991f93983dcd7b9004001583b74978114e3afd"
     },
     "socket.io/socket.io.d.ts": {
-      "commit": "8e85bba87a8c95c7f357e78e3d5d1269c337741d"
+      "commit": "24991f93983dcd7b9004001583b74978114e3afd"
     },
     "mkdirp/mkdirp.d.ts": {
-      "commit": "8e85bba87a8c95c7f357e78e3d5d1269c337741d"
+      "commit": "24991f93983dcd7b9004001583b74978114e3afd"
     }
   }
 }
