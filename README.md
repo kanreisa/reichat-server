@@ -7,8 +7,6 @@ The real-time paint chat server for **[reichat](https://github.com/kanreisa/reic
 [![Dependency Status][dep-img]][dep-url]
 [![devDependency Status][devdep-img]][devdep-url]
 
-![Logo](https://yabumi.cc/14b08e54b51e2abe7c7a55c7.svg)
-
 ## Build
 
 ```bash
@@ -17,6 +15,57 @@ $ npm run tsd reinstall
 $ npm run tsd rebundle
 $ npm run build
 ```
+
+## Example
+
+```js
+var util = require('util');
+var path = require('path');
+var os = require('os');
+var reichatServer = require('reichat-server');
+
+// All settings are optional.
+var config = {
+	title: 'PaintChat',
+	canvasWidth: 1920,
+	canvasHeight: 1080,
+	layerCount: 3,// recommended up to 3.
+
+	// HTTP server for distributing chat client app.
+	clientDir: [__dirname, 'www'].join(path.sep),
+	clientVersion: '0.0.0',
+
+	// File System options.
+	dataDir: os.tmpDir,// if supplied, chat session will persist.
+	dataFilePrefix: 'reichat_exampleroom_001_',
+
+	// Redis options. ()
+	redisHost: 'localhost',// if supplied, activate Redis communication. (will disable saving to File System)
+	redisPort: 6379,
+	redisPassword: '',
+	redisKeyPrefix: 'reichat:exampleroom#001:',// for shared Redis.
+
+	// for security
+	forwardedHeaderType: 'XFF'// use in trusted proxy
+};
+
+reichatServer.createServer(config).once('ready', function () {
+	
+	process.title = 'reichat server - ' + this.id;
+	
+	this.listen(10133, '0.0.0.0', null, function () {
+		util.log(util.format('listening on %s:%s', '0.0.0.0', '10133'));
+	});
+
+	util.log(util.format('created server id: %s', this.id));
+});
+```
+
+## License
+
+[MIT](LICENSE)
+
+![Logo](https://yabumi.cc/14b08e54b51e2abe7c7a55c7.svg)
 
 [npm-img]: https://img.shields.io/npm/v/reichat-server.svg
 [npm-url]: https://npmjs.org/package/reichat-server
