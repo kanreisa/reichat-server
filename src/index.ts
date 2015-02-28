@@ -417,7 +417,9 @@ export class Server extends events.EventEmitter {
         // observe the change of the Layers, and save.
         this.resource.layers.forEach((layer) => {
             layer.on('change', () => {
-                layer.toPngStream(fs.createWriteStream(layer.path))
+                process.nextTick(() => {
+                    layer.toPngStream(fs.createWriteStream(layer.path));
+                });
             })
         });
     }
@@ -440,8 +442,10 @@ export class Server extends events.EventEmitter {
         // observe the change of the Layers, and save.
         this.resource.layers.forEach((layer) => {
             layer.on('change', () => {
-                layer.toPngBuffer((buffer) => {
-                    this.redisClient.set(new Buffer(layer.path), buffer);
+                process.nextTick(() => {
+                    layer.toPngBuffer((buffer) => {
+                        this.redisClient.set(new Buffer(layer.path), buffer);
+                    });
                 });
             })
         });
@@ -512,7 +516,7 @@ export class Server extends events.EventEmitter {
         }, 10000);
 
         // collect
-        setImmediate(() => this.publishRedis('collect', { target: ECollectProvideTarget.Clients }));
+        setTimeout(() => this.publishRedis('collect', { target: ECollectProvideTarget.Clients }), 3000);
     }
 
     /* private unsubscribeRedis(): void {
@@ -873,19 +877,6 @@ export class Server extends events.EventEmitter {
                 }
             }
 
-            if (client.server.id === this.id) {
-                if (this.dataMode === EDataMode.Redis) {
-                    this.publishRedis('paint', {
-                        client: client,
-                        body: paint
-                    });
-                }
-
-                layer.emit('change');
-            } else {
-                layer.emit('update');
-            }
-
             var ioMessage: IIOPaintMessage = {
                 client: this.clientToDistributable(client),
                 layerNumber: paint.layerNumber,
@@ -897,9 +888,22 @@ export class Server extends events.EventEmitter {
 
             if (this.map.socket[client.uuid]) {
                 this.map.socket[client.uuid].broadcast.emit('paint', ioMessage);
-                this.map.socket[client.uuid].emit('painted');
+                setImmediate(() => this.map.socket[client.uuid].emit('painted'));
             } else {
                 this.io.emit('paint', ioMessage);
+            }
+
+            if (client.server.id === this.id) {
+                if (this.dataMode === EDataMode.Redis) {
+                    this.publishRedis('paint', {
+                        client: client,
+                        body: paint
+                    });
+                }
+
+                layer.emit('change');
+            } else {
+                layer.emit('update');
             }
         });
     }
@@ -1042,7 +1046,8 @@ export class Server extends events.EventEmitter {
 class Layer extends events.EventEmitter {
 
     data: Buffer;
-    pngCache: Buffer = null;
+
+    private pngCache: Buffer = null;
 
     constructor(public width: number, public height: number, public n: number, public path: string = '') {
         super();
@@ -1054,7 +1059,7 @@ class Layer extends events.EventEmitter {
             this.pngCache = null;
         });
 
-        // Event: "change" by this server user
+        // Event: "change" by this server user.
         this.on('change', () => {
             this.pngCache = null;
         });
@@ -1072,13 +1077,15 @@ class Layer extends events.EventEmitter {
 
             var buffers = [];
 
-            png.pack().on('data', (buffer) => {
+            png.on('data', (buffer) => {
                 stream.write(buffer);
                 buffers.push(buffer);
             }).on('end', () => {
                 stream.end();
                 this.pngCache = Buffer.concat(buffers);
             });
+
+            process.nextTick(() => png.pack());
         } else {
             stream.end(this.pngCache);
         }
@@ -1096,12 +1103,14 @@ class Layer extends events.EventEmitter {
 
             var buffers = [];
 
-            png.pack().on('data', (buffer) => {
+            png.on('data', (buffer) => {
                 buffers.push(buffer);
             }).on('end', () => {
                 this.pngCache = Buffer.concat(buffers);
                 callback(this.pngCache);
             });
+
+            process.nextTick(() => png.pack());
         } else {
             callback(this.pngCache);
         }
