@@ -6,19 +6,19 @@
   "bundle": "typings/tsd.d.ts",
   "installed": {
     "node/node.d.ts": {
-      "commit": "24991f93983dcd7b9004001583b74978114e3afd"
+      "commit": "819aa8bc552c8aacf526ebf6aa4b2d3a70084688"
     },
     "node-uuid/node-uuid.d.ts": {
-      "commit": "24991f93983dcd7b9004001583b74978114e3afd"
+      "commit": "819aa8bc552c8aacf526ebf6aa4b2d3a70084688"
     },
     "node_redis/node_redis.d.ts": {
-      "commit": "24991f93983dcd7b9004001583b74978114e3afd"
+      "commit": "819aa8bc552c8aacf526ebf6aa4b2d3a70084688"
     },
     "socket.io/socket.io.d.ts": {
-      "commit": "24991f93983dcd7b9004001583b74978114e3afd"
+      "commit": "819aa8bc552c8aacf526ebf6aa4b2d3a70084688"
     },
     "mkdirp/mkdirp.d.ts": {
-      "commit": "24991f93983dcd7b9004001583b74978114e3afd"
+      "commit": "819aa8bc552c8aacf526ebf6aa4b2d3a70084688"
     }
   }
 }
