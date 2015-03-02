@@ -14,7 +14,7 @@ import redis = require('redis');
 import socketio = require('socket.io');
 import mkdirp = require('mkdirp');
 
-var PNG = require('node-png').PNG;
+import png = require('png-async');
 
 import httpUtil = require('./http-util');
 import ioUtil = require('./io-util');
@@ -354,9 +354,9 @@ export class Server extends events.EventEmitter {
             return;
         }
 
-        var png = new PNG().on('parsed', (data) => {
+        var img = new png.Image().on('parsed', (data) => {
 
-            if (png.width !== this.config.canvasWidth || png.height !== this.config.canvasHeight) {
+            if (img.width !== this.config.canvasWidth || img.height !== this.config.canvasHeight) {
                 console.error(util.format('layer#%s data not loaded because canvas size different.', layer.n));
                 return;
             }
@@ -378,10 +378,10 @@ export class Server extends events.EventEmitter {
                 if (fs.existsSync(layer.path) === true) {
                     util.log(util.format('layer#%s data found. FS=%s', layer.n, layer.path));
 
-                    fs.createReadStream(layer.path).pipe(png);
+                    fs.createReadStream(layer.path).pipe(img);
                 } else {
                     try {
-                        png.end();
+                        img.end();
                     } catch (e) {
                         setImmediate(done);
                     }
@@ -391,7 +391,7 @@ export class Server extends events.EventEmitter {
                 this.redisClient.get(new Buffer(layer.path), (err, buffer) => {
 
                     if (err) {
-                        png.end();
+                        img.end();
                         console.error(err);
                         return;
                     }
@@ -399,10 +399,10 @@ export class Server extends events.EventEmitter {
                     if (buffer) {
                         util.log(util.format('layer#%s data found. Redis=%s', layer.n, layer.path));
 
-                        png.end(buffer);
+                        img.end(buffer);
                     } else {
                         try {
-                            png.end();
+                            img.end();
                         } catch (e) {
                             setImmediate(done);
                         }
@@ -804,11 +804,14 @@ export class Server extends events.EventEmitter {
             h = this.config.canvasHeight,
             layers = this.resource.layers;
 
-        var png = new PNG({
+        var img = new png.Image({
             width: w,
-            height: h
+            height: h,
+            deflateLevel: 1,// Fastest
+            filterType: png.EFilterType.None,
+            checkCRC: false
         });
-        png.data.fill(255);
+        img.data.fill(255);
 
         for (i = 0, l = layers.length; i < l; i++) {
             for (y = 0; y < h; y++) {
@@ -816,14 +819,14 @@ export class Server extends events.EventEmitter {
                     j = (w * y + x) << 2;
                     a = layers[i].data[j + 3];
 
-                    png.data[j] = Math.round(((255 - a) / 255 * png.data[j]) + (a / 255 * layers[i].data[j]));
-                    png.data[j + 1] = Math.round(((255 - a) / 255 * png.data[j + 1]) + (a / 255 * layers[i].data[j + 1]));
-                    png.data[j + 2] = Math.round(((255 - a) / 255 * png.data[j + 2]) + (a / 255 * layers[i].data[j + 2]));
+                    img.data[j] = Math.round(((255 - a) / 255 * img.data[j]) + (a / 255 * layers[i].data[j]));
+                    img.data[j + 1] = Math.round(((255 - a) / 255 * img.data[j + 1]) + (a / 255 * layers[i].data[j + 1]));
+                    img.data[j + 2] = Math.round(((255 - a) / 255 * img.data[j + 2]) + (a / 255 * layers[i].data[j + 2]));
                 }
             }
         }
 
-        return png.pack();
+        return img.pack();
     }
 
     private sendPaint(client: IClient, paint: IPaintMessage): void {
@@ -848,7 +851,7 @@ export class Server extends events.EventEmitter {
             return;
         }
 
-        new PNG().parse(paint.data, (err, png) => {
+        new png.Image().parse(paint.data, (err, img) => {
 
             if (err) {
                 return;
@@ -859,10 +862,10 @@ export class Server extends events.EventEmitter {
                 h = this.config.canvasHeight,
                 px = paint.x,
                 py = paint.y,
-                pw = Math.min(paint.x + png.width, w),
-                ph = Math.min(paint.y + png.height, h),
-                iw = png.width,
-                ih = png.height,
+                pw = Math.min(paint.x + img.width, w),
+                ph = Math.min(paint.y + img.height, h),
+                iw = img.width,
+                ih = img.height,
                 layer = this.resource.layers[paint.layerNumber];
 
             for (y = py; y < ph; y++) {
@@ -870,10 +873,10 @@ export class Server extends events.EventEmitter {
                     i = (w * y + x) << 2;
                     j = (iw * (y - py) + (x - px)) << 2;
 
-                    layer.data[i] = png.data[j];
-                    layer.data[i + 1] = png.data[j + 1];
-                    layer.data[i + 2] = png.data[j + 2];
-                    layer.data[i + 3] = png.data[j + 3];
+                    layer.data[i] = img.data[j];
+                    layer.data[i + 1] = img.data[j + 1];
+                    layer.data[i + 2] = img.data[j + 2];
+                    layer.data[i + 3] = img.data[j + 3];
                 }
             }
 
@@ -1053,6 +1056,7 @@ class Layer extends events.EventEmitter {
         super();
 
         this.data = new Buffer(width * height * 4);
+        this.data.fill(0);
 
         // Event: "update" when layer has updated.
         this.on('update', () => {
@@ -1068,16 +1072,19 @@ class Layer extends events.EventEmitter {
     toPngStream(stream: NodeJS.WritableStream): void {
 
         if (this.pngCache === null) {
-            var png = new PNG({
+            var img = new png.Image({
                 width: this.width,
-                height: this.height
+                height: this.height,
+                deflateLevel: 1,// Fastest
+                filterType: png.EFilterType.None,
+                checkCRC: false
             });
 
-            this.data.copy(png.data);
+            this.data.copy(img.data);
 
             var buffers = [];
 
-            png.on('data', (buffer) => {
+            img.on('data', (buffer) => {
                 stream.write(buffer);
                 buffers.push(buffer);
             }).on('end', () => {
@@ -1085,7 +1092,7 @@ class Layer extends events.EventEmitter {
                 this.pngCache = Buffer.concat(buffers);
             });
 
-            process.nextTick(() => png.pack());
+            process.nextTick(() => img.pack());
         } else {
             stream.end(this.pngCache);
         }
@@ -1094,23 +1101,26 @@ class Layer extends events.EventEmitter {
     toPngBuffer(callback: (buffer: Buffer) => void): void {
 
         if (this.pngCache === null) {
-            var png = new PNG({
+            var img = new png.Image({
                 width: this.width,
-                height: this.height
+                height: this.height,
+                deflateLevel: 1,// Fastest
+                filterType: png.EFilterType.None,
+                checkCRC: false
             });
 
-            this.data.copy(png.data);
+            this.data.copy(img.data);
 
             var buffers = [];
 
-            png.on('data', (buffer) => {
+            img.on('data', (buffer) => {
                 buffers.push(buffer);
             }).on('end', () => {
                 this.pngCache = Buffer.concat(buffers);
                 callback(this.pngCache);
             });
 
-            process.nextTick(() => png.pack());
+            process.nextTick(() => img.pack());
         } else {
             callback(this.pngCache);
         }
