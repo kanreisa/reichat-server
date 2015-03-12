@@ -1,27 +1,27 @@
 {
   "version": "v4",
-  "repo": "kanreisa/DefinitelyTyped",
-  "ref": "feature/png-async",
+  "repo": "borisyankov/DefinitelyTyped",
+  "ref": "master",
   "path": "typings",
   "bundle": "typings/tsd.d.ts",
   "installed": {
     "node/node.d.ts": {
-      "commit": "337a91729625ee481c5c1d526f54788bcc5ba6d4"
+      "commit": "a0ee360d4751aa3fc928159d618442e208fd8b23"
     },
     "node-uuid/node-uuid.d.ts": {
-      "commit": "337a91729625ee481c5c1d526f54788bcc5ba6d4"
+      "commit": "a0ee360d4751aa3fc928159d618442e208fd8b23"
     },
     "node_redis/node_redis.d.ts": {
-      "commit": "337a91729625ee481c5c1d526f54788bcc5ba6d4"
+      "commit": "a0ee360d4751aa3fc928159d618442e208fd8b23"
     },
     "socket.io/socket.io.d.ts": {
-      "commit": "337a91729625ee481c5c1d526f54788bcc5ba6d4"
+      "commit": "a0ee360d4751aa3fc928159d618442e208fd8b23"
     },
     "mkdirp/mkdirp.d.ts": {
-      "commit": "337a91729625ee481c5c1d526f54788bcc5ba6d4"
+      "commit": "a0ee360d4751aa3fc928159d618442e208fd8b23"
     },
     "png-async/png-async.d.ts": {
-      "commit": "337a91729625ee481c5c1d526f54788bcc5ba6d4"
+      "commit": "a0ee360d4751aa3fc928159d618442e208fd8b23"
     }
   }
 }
