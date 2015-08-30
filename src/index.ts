@@ -791,10 +791,11 @@ export class Server extends events.EventEmitter {
             util.log(util.format('%s %s joined. client=%s<%s>', remoteAddr, socket.id, client.name, client.uuid));
         });
 
-        socket.on('stroke', (stroke) => this.sendStroke(client, stroke));
-        socket.on('pointer', (pointer) => this.sendPointer(client, pointer));
-        socket.on('paint', (paint) => this.sendPaint(client, paint));
-        socket.on('chat', (chat) => this.sendChat(client, chat));
+        socket.on('stroke', stroke => this.sendStroke(client, stroke));
+        socket.on('pointer', pointer => this.sendPointer(client, pointer));
+        socket.on('paint', paint => this.sendPaint(client, paint));
+        socket.on('chat', chat => this.sendChat(client, chat));
+        socket.on('clear', () => this.clearCanvas(client));
     }
 
     private canvasToPng(): NodeJS.ReadableStream {
@@ -996,6 +997,48 @@ export class Server extends events.EventEmitter {
                 this.io.sockets.connected[socketId].volatile.emit('pointer', ioMessage);
             });
         }
+    }
+
+    private clearCanvas(client: IClient) {
+
+        var img = new png.Image({
+            width: this.config.canvasWidth,
+            height: this.config.canvasHeight,
+            deflateLevel: 1,// Fastest
+            filterType: png.EFilterType.None,
+            checkCRC: false
+        });
+        img.data.fill(0);
+
+        var buffers = [];
+
+        img.on('data', buffer => buffers.push(buffer));
+
+        img.on('end', () => {
+
+            var data = Buffer.concat(buffers);
+
+            this.resource.layers.forEach((l, i) => {
+
+                this.sendPaint(
+                    {
+                        uuid: '0',
+                        server: client.server,
+                        name: client.name,
+                        pin: null
+                    }, {
+                    layerNumber: i,
+                    mode: 'erase',
+                    x: 0,
+                    y: 0,
+                    data: data
+                });
+            });
+        });
+
+        img.pack();
+
+        this.sendSystemMessage(util.format('! %s has cleared canvas.', client.name));
     }
 
     private sendChat(client: IClient, chat: IChatMessage) {
